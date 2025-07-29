@@ -25,100 +25,109 @@
 
     <pre id="output">Loading Pyodide...</pre>
 
-    <script type="text/javascript">
-        let pyodide;
-        let pyodideReady = false;
+    <!-- Replace your script section with this enhanced version -->
+<script type="text/javascript">
+    let pyodide;
+    let pyodideReady = false;
 
-        async function loadPyodideAndPackages() {
-            console.log("Starting Pyodide initialization...");
-            try {
-                pyodide = await loadPyodide({
-                    stdout: text => document.getElementById("output").textContent += text + "\n",
-                    stderr: text => document.getElementById("output").textContent += `ERROR: ${text}\n`
-                });
-                console.log("Pyodide loaded, now loading packages...");
-                
-                await pyodide.loadPackage(['pandas', 'numpy']);
-                console.log("Packages loaded successfully");
-                pyodide.setStdout({ batched: (text) => {
-                console.log("Python:", text);
-                document.getElementById("output").textContent += text + "\n";
-                }});
+    // Enhanced logging function
+    function log(message, isError = false) {
+        const output = document.getElementById("output");
+        const line = `[${new Date().toISOString()}] ${message}\n`;
+        output.textContent += line;
+        if (isError) {
+            console.error(line);
+        } else {
+            console.log(line);
+        }
+    }
 
+    async function loadPyodideAndPackages() {
+        log("Starting Pyodide initialization...");
+        try {
+            pyodide = await loadPyodide();
+            log("Pyodide core loaded");
+            
+            pyodide.setStdout({ 
+                batched: (text) => log(`PY: ${text}`)
+            });
+            pyodide.setStderr({ 
+                batched: (text) => log(`PY ERROR: ${text}`, true)
+            });
 
-                // Load helper code
-                const helperResponse = await fetch('./helpers.py');
-                if (!helperResponse.ok) throw new Error(`Failed to load helpers.py: ${helperResponse.status}`);
-                const helperCode = await helperResponse.text();
-                console.log("Helper code loaded:", helperCode.substring(0, 100) + "...");
-                
-                // Load preloaded CSV file
-                const csvResponse = await fetch("./math_bbqs.csv");
-                if (!csvResponse.ok) throw new Error(`Failed to load math_bbqs.csv: ${csvResponse.status}`);
-                const preloaded = await csvResponse.text();
-                console.log("Preloaded CSV loaded successfully");
-                
-                pyodide.FS.writeFile("math_bbqs.csv", preloaded);
-                pyodide.runPython(helperCode);
-                
-                pyodideReady = true;
-                return true;
-            } catch (e) {
-                console.error("Initialization error:", e);
-                document.getElementById("output").textContent = `Initialization failed: ${e.message}`;
-                return false;
-            }
+            log("Loading pandas and numpy...");
+            await pyodide.loadPackage(['pandas', 'numpy']);
+            log("Packages loaded");
+
+            log("Fetching helpers.py...");
+            const helperResponse = await fetch('./helpers.py');
+            if (!helperResponse.ok) throw new Error(`HTTP ${helperResponse.status}`);
+            const helperCode = await helperResponse.text();
+            log("Helpers.py loaded successfully");
+
+            log("Loading math_bbqs.csv...");
+            const csvResponse = await fetch("./math_bbqs.csv");
+            if (!csvResponse.ok) throw new Error(`HTTP ${csvResponse.status}`);
+            const preloaded = await csvResponse.text();
+            pyodide.FS.writeFile("math_bbqs.csv", preloaded);
+            log("CSV file written to virtual FS");
+
+            log("Executing helper code...");
+            pyodide.runPython(helperCode);
+            log("Helper code executed");
+
+            pyodideReady = true;
+            log("Pyodide initialization complete");
+        } catch (e) {
+            log(`INIT ERROR: ${e.message}`, true);
+        }
+    }
+
+    async function runPython() {
+        if (!pyodideReady) {
+            log("Pyodide not ready yet", true);
+            return;
         }
 
-        // Initialize Pyodide
-        loadPyodideAndPackages().then((success) => {
-            if (success) {
-                console.log("Pyodide ready!");
-                document.getElementById("output").textContent = "Pyodide ready! Upload a CSV file and click 'Run Function'";
-            }
-        });
+        const fileInput = document.getElementById("csvUpload").files[0];
+        if (!fileInput) {
+            log("No file selected", true);
+            return;
+        }
 
-        async function runPython() {
-            if (!pyodideReady) {
-                document.getElementById("output").textContent = "Pyodide is still loading. Please wait...";
-                return;
-            }
+        log(`Processing file: ${fileInput.name}`);
+        
+        try {
+            const fileContent = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(new Error("File read failed"));
+                reader.readAsText(fileInput);
+            });
 
-            const fileInput = document.getElementById("csvUpload").files[0];
-            const intParam = document.getElementById("intParam").value;
-            const dropdownParam = document.getElementById("dropdownParam").value;
+            log("Writing uploaded file to virtual FS...");
+            pyodide.FS.writeFile("uploaded.csv", fileContent);
+            log("File write complete");
 
-            if (!fileInput) {
-                alert("Please upload a CSV file.");
-                return;
-            }
+            const intParam = document.getElementById("intParam").value || 30;
+            const dropdownParam = document.getElementById("dropdownParam").value || "option1";
 
-            document.getElementById("output").textContent = "Processing... (this may take a moment)";
-            console.log("Starting processing...");
-
-            const reader = new FileReader();
-            reader.onload = async function () {
-                try {
-                    const uploadedCsv = reader.result;
-                    console.log("Uploaded CSV size:", uploadedCsv.length);
-                    
-                    pyodide.FS.writeFile("uploaded.csv", uploadedCsv);
-                    console.log("File written to virtual FS");
-
-                    const code = `
-import pandas as pd
-from helpers import *
+            const code = `
+import traceback
 try:
-    print("Reading input files...")
+    print("Starting Python processing...")
+    from helpers import get_practice_set
+    import pandas as pd
+    
+    print("Reading CSVs...")
     student_raw = pd.read_csv("uploaded.csv")
     math_df = pd.read_csv("math_bbqs.csv")
-    print("Files read successfully")
-
-    print("Processing data...")
+    
+    print("Calling get_practice_set...")
     result = get_practice_set(
-        student_raw, 
-        math_df, 
-        target_num_questions=${intParam}, 
+        student_raw,
+        math_df,
+        target_num_questions=${intParam},
         subs_list=["${dropdownParam}"]
     )
     
@@ -126,61 +135,30 @@ try:
     result.to_csv("output.csv", index=False)
     print("Processing complete!")
 except Exception as e:
-    print(f"Python error: {str(e)}")
-    raise
-                    `;
-                    
-                    console.log("Executing Python code...");
-                    await pyodide.runPythonAsync(code);
-                    console.log("Python execution complete");
+    print(f"ERROR: {str(e)}")
+    traceback.print_exc()
+            `;
 
-                    try {
-                        const outputCsv = pyodide.FS.readFile("output.csv", { encoding: "utf8" });
-                        document.getElementById("output").textContent = "Processing complete!\n\n" + 
-                            outputCsv.substring(0, 1000) + 
-                            (outputCsv.length > 1000 ? "\n... (truncated)" : "");
-                        console.log("Output displayed successfully");
-                    } catch (e) {
-                        document.getElementById("output").textContent = `Error reading output file: ${e.message}\n` +
-                            `Check if the Python function wrote the output correctly.`;
-                        console.error("Output read error:", e);
-                    }
-                } catch (e) {
-                    document.getElementById("output").textContent = `Error during processing: ${e.message}`;
-                    console.error("Processing error:", e);
-                }
-            };
-            
-            reader.onerror = function() {
-                document.getElementById("output").textContent = "Error reading uploaded file";
-                console.error("FileReader error");
-            };
-            
-            reader.readAsText(fileInput);
-        }
+            log("Executing Python code...");
+            await pyodide.runPythonAsync(code);
+            log("Python execution finished");
 
-        function downloadOutput() {
             try {
-                if (!pyodideReady) {
-                    alert("Pyodide not ready yet");
-                    return;
-                }
-                
-                const outputCsv = pyodide.FS.readFile("output.csv", { encoding: "utf8" });
-                const blob = new Blob([outputCsv], { type: "text/csv" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = "practice_set.csv";
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+                const output = pyodide.FS.readFile("output.csv", { encoding: "utf8" });
+                log(`Output CSV created (${output.length} bytes)`);
+                document.getElementById("output").textContent += "\n--- First 100 chars ---\n" + output.substring(0, 100);
             } catch (e) {
-                alert(`Failed to download: ${e.message}`);
-                console.error("Download error:", e);
+                log(`Output file error: ${e.message}`, true);
             }
+        } catch (e) {
+            log(`Processing failed: ${e.message}`, true);
         }
-    </script>
+    }
+
+    // Initialize
+    loadPyodideAndPackages().then(() => {
+        log("System ready for processing");
+    });
+</script>
 </body>
 </html>
