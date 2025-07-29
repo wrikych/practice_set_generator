@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>CSV Processing App</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+</head>
+<body>
+    <h1>Run Data Processing</h1>
+
+    <input type="file" id="csvUpload" accept=".csv"><br><br>
+
+    <label for="intParam">Integer Parameter:</label>
+    <input type="number" id="intParam"><br><br>
+
+    <label for="dropdownParam">Choose Option:</label>
+    <select id="dropdownParam">
+        <option value="option1">Option 1</option>
+        <option value="option2">Option 2</option>
+        <option value="option3">Option 3</option>
+    </select><br><br>
+
+    <button onclick="runPython()">Run Function</button>
+    <button onclick="downloadOutput()">Download CSV</button>
+
+    <pre id="output">Loading Pyodide...</pre>
+
+    <script type="text/javascript">
+        let pyodide;
+
+        async function loadPyodideAndPackages() {
+            pyodide = await loadPyodide();
+            await pyodide.loadPackage(['pandas', 'numpy']);
+            const helperCode = await fetch('helper_functions.py').then(r => r.text());
+            pyodide.runPython(helperCode);
+
+            // Load preloaded CSV file
+            const preloaded = await fetch("math_bbqs.csv").then(r => r.text());
+            pyodide.FS.writeFile("math_bbqs.csv", preloaded);
+        }
+
+        loadPyodideAndPackages().then(() => {
+            document.getElementById("output").textContent = "Pyodide ready!";
+        });
+
+        async function runPython() {
+            const fileInput = document.getElementById("csvUpload").files[0];
+            const intParam = document.getElementById("intParam").value;
+            const dropdownParam = document.getElementById("dropdownParam").value;
+
+            if (!fileInput) {
+                alert("Please upload a CSV file.");
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = async function () {
+                const uploadedCsv = reader.result;
+                pyodide.FS.writeFile("uploaded.csv", uploadedCsv);
+
+                const code = `
+        import pandas as pd
+        student_raw = pd.read_csv("uploaded.csv")
+        math_df = pd.read_csv("math_bbqs.csv")
+
+        # Call your function
+        get_practice_set(student_raw, math_df, target_num_questions=${intParam}, subs_list=["${dropdownParam}"])
+
+        # Output is written to 'output.csv'
+                `;
+                pyodide.runPython(code);
+
+                const outputCsv = pyodide.FS.readFile("output.csv", { encoding: "utf8" });
+                document.getElementById("output").textContent = outputCsv;
+            };
+
+    reader.readAsText(fileInput);
+}
+        function downloadOutput() {
+            const outputCsv = pyodide.FS.readFile("output.csv", { encoding: "utf8" });
+            const blob = new Blob([outputCsv], { type: "text/csv" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "practice_set.csv";
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
