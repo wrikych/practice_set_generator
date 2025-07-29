@@ -27,23 +27,58 @@
 
     <script type="text/javascript">
         let pyodide;
+        let pyodideReady = false;
 
         async function loadPyodideAndPackages() {
-            pyodide = await loadPyodide();
-            await pyodide.loadPackage(['pandas', 'numpy']);
-            const helperCode = await fetch('helper_functions.py').then(r => r.text());
-            pyodide.runPython(helperCode);
-
-            // Load preloaded CSV file
-            const preloaded = await fetch("math_bbqs.csv").then(r => r.text());
-            pyodide.FS.writeFile("math_bbqs.csv", preloaded);
+            console.log("Starting Pyodide initialization...");
+            try {
+                pyodide = await loadPyodide({
+                    stdout: text => document.getElementById("output").textContent += text + "\n",
+                    stderr: text => document.getElementById("output").textContent += `ERROR: ${text}\n`
+                });
+                console.log("Pyodide loaded, now loading packages...");
+                
+                await pyodide.loadPackage(['pandas', 'numpy']);
+                console.log("Packages loaded successfully");
+                
+                // Load helper code
+                const helperResponse = await fetch('./helpers.py');
+                if (!helperResponse.ok) throw new Error(`Failed to load helpers.py: ${helperResponse.status}`);
+                const helperCode = await helperResponse.text();
+                console.log("Helper code loaded:", helperCode.substring(0, 100) + "...");
+                
+                // Load preloaded CSV file
+                const csvResponse = await fetch("./math_bbqs.csv");
+                if (!csvResponse.ok) throw new Error(`Failed to load math_bbqs.csv: ${csvResponse.status}`);
+                const preloaded = await csvResponse.text();
+                console.log("Preloaded CSV loaded successfully");
+                
+                pyodide.FS.writeFile("math_bbqs.csv", preloaded);
+                pyodide.runPython(helperCode);
+                
+                pyodideReady = true;
+                return true;
+            } catch (e) {
+                console.error("Initialization error:", e);
+                document.getElementById("output").textContent = `Initialization failed: ${e.message}`;
+                return false;
+            }
         }
 
-        loadPyodideAndPackages().then(() => {
-            document.getElementById("output").textContent = "Pyodide ready!";
+        // Initialize Pyodide
+        loadPyodideAndPackages().then((success) => {
+            if (success) {
+                console.log("Pyodide ready!");
+                document.getElementById("output").textContent = "Pyodide ready! Upload a CSV file and click 'Run Function'";
+            }
         });
 
         async function runPython() {
+            if (!pyodideReady) {
+                document.getElementById("output").textContent = "Pyodide is still loading. Please wait...";
+                return;
+            }
+
             const fileInput = document.getElementById("csvUpload").files[0];
             const intParam = document.getElementById("intParam").value;
             const dropdownParam = document.getElementById("dropdownParam").value;
@@ -53,39 +88,93 @@
                 return;
             }
 
+            document.getElementById("output").textContent = "Processing... (this may take a moment)";
+            console.log("Starting processing...");
+
             const reader = new FileReader();
             reader.onload = async function () {
-                const uploadedCsv = reader.result;
-                pyodide.FS.writeFile("uploaded.csv", uploadedCsv);
+                try {
+                    const uploadedCsv = reader.result;
+                    console.log("Uploaded CSV size:", uploadedCsv.length);
+                    
+                    pyodide.FS.writeFile("uploaded.csv", uploadedCsv);
+                    console.log("File written to virtual FS");
 
-                const code = `
-        import pandas as pd
-        from helpers import *
-        student_raw = pd.read_csv("uploaded.csv")
-        math_df = pd.read_csv("math_bbqs.csv")
+                    const code = `
+import pandas as pd
+from helpers import *
+try:
+    print("Reading input files...")
+    student_raw = pd.read_csv("uploaded.csv")
+    math_df = pd.read_csv("math_bbqs.csv")
+    print("Files read successfully")
 
-        # Call your function
-        get_practice_set(student_raw, math_df, target_num_questions=${intParam}, subs_list=["${dropdownParam}"])
+    print("Processing data...")
+    result = get_practice_set(
+        student_raw, 
+        math_df, 
+        target_num_questions=${intParam}, 
+        subs_list=["${dropdownParam}"]
+    )
+    
+    print("Saving results...")
+    result.to_csv("output.csv", index=False)
+    print("Processing complete!")
+except Exception as e:
+    print(f"Python error: {str(e)}")
+    raise
+                    `;
+                    
+                    console.log("Executing Python code...");
+                    await pyodide.runPythonAsync(code);
+                    console.log("Python execution complete");
 
-        # Output is written to 'output.csv'
-                `;
-                pyodide.runPython(code);
-
-                const outputCsv = pyodide.FS.readFile("output.csv", { encoding: "utf8" });
-                document.getElementById("output").textContent = outputCsv;
+                    try {
+                        const outputCsv = pyodide.FS.readFile("output.csv", { encoding: "utf8" });
+                        document.getElementById("output").textContent = "Processing complete!\n\n" + 
+                            outputCsv.substring(0, 1000) + 
+                            (outputCsv.length > 1000 ? "\n... (truncated)" : "");
+                        console.log("Output displayed successfully");
+                    } catch (e) {
+                        document.getElementById("output").textContent = `Error reading output file: ${e.message}\n` +
+                            `Check if the Python function wrote the output correctly.`;
+                        console.error("Output read error:", e);
+                    }
+                } catch (e) {
+                    document.getElementById("output").textContent = `Error during processing: ${e.message}`;
+                    console.error("Processing error:", e);
+                }
             };
+            
+            reader.onerror = function() {
+                document.getElementById("output").textContent = "Error reading uploaded file";
+                console.error("FileReader error");
+            };
+            
+            reader.readAsText(fileInput);
+        }
 
-    reader.readAsText(fileInput);
-}
         function downloadOutput() {
-            const outputCsv = pyodide.FS.readFile("output.csv", { encoding: "utf8" });
-            const blob = new Blob([outputCsv], { type: "text/csv" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "practice_set.csv";
-            a.click();
-            URL.revokeObjectURL(url);
+            try {
+                if (!pyodideReady) {
+                    alert("Pyodide not ready yet");
+                    return;
+                }
+                
+                const outputCsv = pyodide.FS.readFile("output.csv", { encoding: "utf8" });
+                const blob = new Blob([outputCsv], { type: "text/csv" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "practice_set.csv";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                alert(`Failed to download: ${e.message}`);
+                console.error("Download error:", e);
+            }
         }
     </script>
 </body>
