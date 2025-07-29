@@ -40,7 +40,12 @@
                 
                 await pyodide.loadPackage(['pandas', 'numpy']);
                 console.log("Packages loaded successfully");
-                
+                pyodide.setStdout({ batched: (text) => {
+                console.log("Python:", text);
+                document.getElementById("output").textContent += text + "\n";
+                }});
+
+
                 // Load helper code
                 const helperResponse = await fetch('./helpers.py');
                 if (!helperResponse.ok) throw new Error(`Failed to load helpers.py: ${helperResponse.status}`);
